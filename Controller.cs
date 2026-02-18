@@ -7,7 +7,9 @@ public sealed class Controller : IDisposable
     private readonly InputLeaseManager _lease;
     private readonly RecorderService _recorder;
     private readonly PlaybackService _player;
-    private readonly RoiMonitorService _roiMonitor;
+    private readonly WatcherCoordinator _watchers;
+    private readonly SmartRuleEvaluator _evaluator = new();
+    private readonly RuleRuntimeCache _runtimeCache = new();
 
     private readonly CancellationTokenSource _appCts = new();
 
@@ -17,14 +19,15 @@ public sealed class Controller : IDisposable
     public AppMode Mode { get; private set; } = AppMode.Idle;
 
     public Controller(Storage storage, TimelineService timeline, InputLeaseManager lease,
-        RecorderService recorder, PlaybackService player, RoiMonitorService roiMonitor)
+        RecorderService recorder, PlaybackService player, WatcherCoordinator watchers)
     {
         _storage = storage;
         _timeline = timeline;
         _lease = lease;
         _recorder = recorder;
         _player = player;
-        _roiMonitor = roiMonitor;
+        _watchers = watchers;
+        _watchers.OnObservation += HandleObservation;
     }
 
     public void InitializeRuntimeRules()
@@ -172,7 +175,7 @@ public sealed class Controller : IDisposable
             if (other.Id == ruleId) continue;
             if (!other.Enabled && other.State == RuleState.Disarmed) continue;
 
-            _roiMonitor.Stop(other.Id);
+            _watchers.Stop(other.Id);
             other.Enabled = false;
             other.State = RuleState.Disarmed;
             _storage.UpsertRule(other);
@@ -212,14 +215,9 @@ public sealed class Controller : IDisposable
         rule.State = RuleState.ArmedMonitoring;
         _storage.UpsertRule(rule);
 
-        _roiMonitor.StartOrReplace(
-            rule,
-            onTriggered: (rid, metric) => _ = HandleRoiTriggeredAsync(rid, metric),
-            log: ev => _timeline.Add(ev),
-            externalCt: _appCts.Token
-        );
+        _watchers.Start(rule, _appCts.Token);
 
-        if (!_roiMonitor.IsRunning(rule.Id))
+        if (!_watchers.IsRunning(rule.Id))
         {
             rule.Enabled = false;
             rule.State = RuleState.Disarmed;
@@ -235,7 +233,8 @@ public sealed class Controller : IDisposable
 
     public void DisarmRule(string ruleId)
     {
-        _roiMonitor.Stop(ruleId);
+        _watchers.Stop(ruleId);
+        _runtimeCache.Remove(ruleId);
 
         var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
         if (rule is null) return;
@@ -247,9 +246,6 @@ public sealed class Controller : IDisposable
         _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Message = $"Rule disarmed: {rule.Name}." });
         RecomputeMode();
     }
-
-    private async Task HandleRoiTriggeredAsync(string ruleId, double metric)
-        => await HandleRuleFireAsync(ruleId, metric, "trigger");
 
     private async Task HandleRuleFireAsync(string ruleId, double metric, string reason)
     {
@@ -293,7 +289,7 @@ public sealed class Controller : IDisposable
 
             _timeline.Add(new TimelineEvent { Source = TimelineSource.System, Message = $"[Lease] Result owner=RuleRun:{ruleId} result=ok" });
 
-            _roiMonitor.Stop(ruleId);
+            _watchers.Stop(ruleId);
 
             Mode = AppMode.RunningRule;
             _activeRunCts = new CancellationTokenSource();
@@ -347,12 +343,7 @@ public sealed class Controller : IDisposable
 
             if (shouldContinue)
             {
-                _roiMonitor.StartOrReplace(
-                    rule,
-                    onTriggered: (rid, m2) => _ = HandleRoiTriggeredAsync(rid, m2),
-                    log: ev => _timeline.Add(ev),
-                    externalCt: _appCts.Token
-                );
+                _watchers.Start(rule, _appCts.Token);
                 _timeline.Add(new TimelineEvent { Source = TimelineSource.Trigger, Message = $"[Trigger] MonitorResume ruleId={rule.Id}" });
             }
             else
@@ -388,6 +379,94 @@ public sealed class Controller : IDisposable
         }
     }
 
+    private void HandleObservation(Observation observation)
+    {
+        try
+        {
+            var ruleId = ExtractRuleId(observation.Scope);
+            if (string.IsNullOrWhiteSpace(ruleId)) return;
+
+            var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
+            if (rule is null || !rule.Enabled || rule.State != RuleState.ArmedMonitoring)
+                return;
+            if (!rule.Smart.EnableSmartRules && observation.SourceType != ObservationSourceType.RoiDiff)
+                return;
+
+            var state = _runtimeCache.ForRule(ruleId);
+            switch (observation.SourceType)
+            {
+                case ObservationSourceType.RoiDiff:
+                    state.LastRoi = observation;
+                    break;
+                case ObservationSourceType.Uia:
+                    state.LastUia = observation;
+                    break;
+                case ObservationSourceType.Ocr:
+                    state.LastOcr = observation;
+                    break;
+            }
+
+            if (!rule.Smart.EnableSmartRules && observation.SourceType == ObservationSourceType.RoiDiff)
+            {
+                _ = HandleRuleFireAsync(ruleId, observation.Confidence, "roi-mvp");
+                return;
+            }
+
+            var eval = _evaluator.Evaluate(rule, state);
+            rule.LastScore = eval.RuleScore;
+            rule.LastExplanation = eval.Explanation;
+
+            _storage.InsertRuleScore(new RuleScoreSample
+            {
+                RuleId = ruleId,
+                Score = eval.RuleScore,
+                Explanation = eval.Explanation,
+                TopReasons = eval.Explanation
+            });
+
+            _timeline.Add(new TimelineEvent
+            {
+                Source = TimelineSource.Trigger,
+                Message = $"[SmartRules] ruleId={ruleId} src={observation.SourceType} score={eval.RuleScore:0.000} why={eval.Explanation}"
+            });
+
+            if (eval.ShouldFire)
+                _ = HandleRuleFireAsync(ruleId, eval.RuleScore, observation.SourceType.ToString());
+        }
+        catch (Exception ex)
+        {
+            _timeline.Add(new TimelineEvent { Source = TimelineSource.Trigger, Severity = TimelineSeverity.Warn, Message = $"[SmartRules] fail-soft observation error: {ex.Message}" });
+        }
+    }
+
+
+    private static string? ExtractRuleId(string scope)
+    {
+        if (string.IsNullOrWhiteSpace(scope)) return null;
+        // Expected format: rule:{id}:sensor
+        var parts = scope.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return null;
+        if (!string.Equals(parts[0], "rule", StringComparison.OrdinalIgnoreCase)) return null;
+        return parts[1];
+    }
+
+    public (double score, string explanation) GetRuleScore(string ruleId)
+    {
+        var latest = _storage.GetLatestRuleScore(ruleId);
+        return latest is null ? (0.0, "No score yet.") : (latest.Score, latest.Explanation);
+    }
+
+    public void ApplyRuleFeedback(string ruleId, bool wasCorrect)
+    {
+        var rule = _storage.ListRules().FirstOrDefault(r => r.Id == ruleId);
+        if (rule is null) return;
+
+        SmartRuleEvaluator.ApplyFeedback(rule, wasCorrect);
+        _storage.UpsertRule(rule);
+        _storage.InsertRuleFeedback(new RuleFeedbackRecord { RuleId = ruleId, WasCorrect = wasCorrect });
+        _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Message = $"[SmartRules] Feedback ruleId={ruleId} result={(wasCorrect ? "correct" : "false-trigger")} threshold={rule.Smart.FireThreshold:0.00}" });
+    }
+
     private static string FormatRepeatLabel(RuleModel rule)
         => rule.Repeat.Mode switch
         {
@@ -402,7 +481,11 @@ public sealed class Controller : IDisposable
         _timeline.Add(new TimelineEvent { Source = TimelineSource.System, Severity = TimelineSeverity.Warn, Message = "Panic stop requested." });
 
         try { _activeRunCts?.Cancel(); } catch { }
-        _roiMonitor.StopAll();
+        foreach (var rule in _storage.ListRules())
+        {
+            _watchers.Stop(rule.Id);
+            _runtimeCache.Remove(rule.Id);
+        }
 
         try { _recorder.StopAndBuildSteps(); } catch { }
 
@@ -438,6 +521,7 @@ public sealed class Controller : IDisposable
     {
         PanicStop();
         _appCts.Cancel();
+        _watchers.Dispose();
         _appCts.Dispose();
     }
 }
