@@ -8,6 +8,12 @@ public sealed class Controller : IDisposable
     private readonly RecorderService _recorder;
     private readonly PlaybackService _player;
     private readonly RoiMonitorService _roiMonitor;
+    private readonly RoiDiffWatcher _roiWatcher;
+    private readonly UiaWatcher _uiaWatcher;
+    private readonly OcrWatcher _ocrWatcher;
+    private readonly RuleEvaluator _evaluator = new();
+    private readonly Dictionary<string, Dictionary<ObservationSourceType, Observation>> _latestObservations = new();
+    private readonly Dictionary<string, int> _scoreStreak = new();
 
     private readonly CancellationTokenSource _appCts = new();
 
@@ -17,7 +23,8 @@ public sealed class Controller : IDisposable
     public AppMode Mode { get; private set; } = AppMode.Idle;
 
     public Controller(Storage storage, TimelineService timeline, InputLeaseManager lease,
-        RecorderService recorder, PlaybackService player, RoiMonitorService roiMonitor)
+        RecorderService recorder, PlaybackService player, RoiMonitorService roiMonitor,
+        RoiDiffWatcher roiWatcher, UiaWatcher uiaWatcher, OcrWatcher ocrWatcher)
     {
         _storage = storage;
         _timeline = timeline;
@@ -25,6 +32,13 @@ public sealed class Controller : IDisposable
         _recorder = recorder;
         _player = player;
         _roiMonitor = roiMonitor;
+        _roiWatcher = roiWatcher;
+        _uiaWatcher = uiaWatcher;
+        _ocrWatcher = ocrWatcher;
+
+        _roiWatcher.OnObservation += HandleObservation;
+        _uiaWatcher.OnObservation += HandleObservation;
+        _ocrWatcher.OnObservation += HandleObservation;
     }
 
     public void InitializeRuntimeRules()
@@ -212,14 +226,11 @@ public sealed class Controller : IDisposable
         rule.State = RuleState.ArmedMonitoring;
         _storage.UpsertRule(rule);
 
-        _roiMonitor.StartOrReplace(
-            rule,
-            onTriggered: (rid, metric) => _ = HandleRoiTriggeredAsync(rid, metric),
-            log: ev => _timeline.Add(ev),
-            externalCt: _appCts.Token
-        );
+        _roiWatcher.Start(rule, _appCts.Token);
+        _uiaWatcher.Start(rule, _appCts.Token);
+        _ocrWatcher.Start(rule, _appCts.Token);
 
-        if (!_roiMonitor.IsRunning(rule.Id))
+        if (!_roiWatcher.IsRunning(rule.Id))
         {
             rule.Enabled = false;
             rule.State = RuleState.Disarmed;
@@ -236,6 +247,9 @@ public sealed class Controller : IDisposable
     public void DisarmRule(string ruleId)
     {
         _roiMonitor.Stop(ruleId);
+        _roiWatcher.Stop(ruleId);
+        _uiaWatcher.Stop(ruleId);
+        _ocrWatcher.Stop(ruleId);
 
         var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
         if (rule is null) return;
@@ -248,8 +262,6 @@ public sealed class Controller : IDisposable
         RecomputeMode();
     }
 
-    private async Task HandleRoiTriggeredAsync(string ruleId, double metric)
-        => await HandleRuleFireAsync(ruleId, metric, "trigger");
 
     private async Task HandleRuleFireAsync(string ruleId, double metric, string reason)
     {
@@ -294,6 +306,9 @@ public sealed class Controller : IDisposable
             _timeline.Add(new TimelineEvent { Source = TimelineSource.System, Message = $"[Lease] Result owner=RuleRun:{ruleId} result=ok" });
 
             _roiMonitor.Stop(ruleId);
+        _roiWatcher.Stop(ruleId);
+        _uiaWatcher.Stop(ruleId);
+        _ocrWatcher.Stop(ruleId);
 
             Mode = AppMode.RunningRule;
             _activeRunCts = new CancellationTokenSource();
@@ -347,12 +362,9 @@ public sealed class Controller : IDisposable
 
             if (shouldContinue)
             {
-                _roiMonitor.StartOrReplace(
-                    rule,
-                    onTriggered: (rid, m2) => _ = HandleRoiTriggeredAsync(rid, m2),
-                    log: ev => _timeline.Add(ev),
-                    externalCt: _appCts.Token
-                );
+                _roiWatcher.Start(rule, _appCts.Token);
+                _uiaWatcher.Start(rule, _appCts.Token);
+                _ocrWatcher.Start(rule, _appCts.Token);
                 _timeline.Add(new TimelineEvent { Source = TimelineSource.Trigger, Message = $"[Trigger] MonitorResume ruleId={rule.Id}" });
             }
             else
@@ -388,6 +400,49 @@ public sealed class Controller : IDisposable
         }
     }
 
+
+    private void HandleObservation(Observation observation)
+    {
+        try
+        {
+            if (!_latestObservations.TryGetValue(observation.RuleId, out var map))
+            {
+                map = new Dictionary<ObservationSourceType, Observation>();
+                _latestObservations[observation.RuleId] = map;
+            }
+            map[observation.SourceType] = observation;
+
+            if (observation.SourceType != ObservationSourceType.RoiDiff)
+                return;
+
+            var rule = _storage.ListRules().FirstOrDefault(x => x.Id == observation.RuleId);
+            if (rule is null || !rule.Enabled || rule.State != RuleState.ArmedMonitoring) return;
+
+            var eval = _evaluator.Evaluate(rule, observation, map);
+            _storage.InsertRuleScore(new RuleScoreSnapshot { RuleId = rule.Id, UtcTime = DateTime.UtcNow, Score = eval.Score, Explanation = eval.Explanation });
+
+            _timeline.Add(new TimelineEvent
+            {
+                Source = TimelineSource.Rule,
+                Message = $"[SmartRule] score={eval.Score:0.000} threshold={rule.Trigger.FireThreshold:0.000} reasons={string.Join("; ", eval.TopReasons)}"
+            });
+
+            int streak = _scoreStreak.TryGetValue(rule.Id, out var v) ? v : 0;
+            if (eval.Score >= rule.Trigger.FireThreshold) streak++; else streak = 0;
+            _scoreStreak[rule.Id] = streak;
+
+            if (streak >= Math.Max(1, rule.Trigger.ScoreConsecutiveRequired))
+            {
+                _scoreStreak[rule.Id] = 0;
+                _ = HandleRuleFireAsync(rule.Id, observation.Confidence, "smart-score");
+            }
+        }
+        catch (Exception ex)
+        {
+            _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Severity = TimelineSeverity.Warn, Message = $"[SmartRule] observation error: {ex.Message}" });
+        }
+    }
+
     private static string FormatRepeatLabel(RuleModel rule)
         => rule.Repeat.Mode switch
         {
@@ -397,12 +452,40 @@ public sealed class Controller : IDisposable
             _ => "unknown"
         };
 
+
+    public void SubmitRuleFeedback(string ruleId, RuleFeedbackKind kind)
+    {
+        var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
+        if (rule is null) return;
+
+        _storage.InsertRuleFeedback(ruleId, kind);
+        if (kind == RuleFeedbackKind.FalseTrigger)
+        {
+            rule.Trigger.FireThreshold = Math.Clamp(rule.Trigger.FireThreshold + 0.03, 0.4, 0.98);
+            rule.Trigger.RoiWeight = Math.Clamp(rule.Trigger.RoiWeight - 0.02, 0.2, 1.0);
+        }
+        else
+        {
+            rule.Trigger.FireThreshold = Math.Clamp(rule.Trigger.FireThreshold - 0.02, 0.25, 0.98);
+            rule.Trigger.RoiWeight = Math.Clamp(rule.Trigger.RoiWeight + 0.01, 0.2, 1.0);
+        }
+
+        _storage.UpsertRule(rule);
+        _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Message = $"[SmartRule] feedback={kind} rule={rule.Name} newThreshold={rule.Trigger.FireThreshold:0.00}" });
+    }
+
     public void PanicStop()
     {
         _timeline.Add(new TimelineEvent { Source = TimelineSource.System, Severity = TimelineSeverity.Warn, Message = "Panic stop requested." });
 
         try { _activeRunCts?.Cancel(); } catch { }
         _roiMonitor.StopAll();
+        foreach (var r in _storage.ListRules())
+        {
+            _roiWatcher.Stop(r.Id);
+            _uiaWatcher.Stop(r.Id);
+            _ocrWatcher.Stop(r.Id);
+        }
 
         try { _recorder.StopAndBuildSteps(); } catch { }
 
@@ -439,5 +522,8 @@ public sealed class Controller : IDisposable
         PanicStop();
         _appCts.Cancel();
         _appCts.Dispose();
+        _roiWatcher.Dispose();
+        _uiaWatcher.Dispose();
+        _ocrWatcher.Dispose();
     }
 }

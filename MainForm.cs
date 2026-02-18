@@ -33,6 +33,14 @@ public sealed class MainForm : Form
 
     private readonly CheckBox _chkMultiScale = new();
     private readonly CheckBox _chkRuleOcrAnchors = new();
+    private readonly CheckBox _chkUseUiaWatcher = new();
+    private readonly CheckBox _chkUseOcrWatcher = new();
+    private readonly TextBox _txtUiaSelector = new();
+    private readonly TextBox _txtUiaExpected = new();
+    private readonly TextBox _txtOcrExpected = new();
+    private readonly ComboBox _cmbTextMatchMode = new();
+    private readonly Label _lblRuleScore = new();
+    private readonly Label _lblRuleWhy = new();
     private readonly CheckBox _chkOrbFallback = new();
     private readonly CheckBox _chkRuleWindowFilter = new();
     private readonly TextBox _txtWindowProcess = new();
@@ -227,6 +235,9 @@ public sealed class MainForm : Form
             CreateActionButton("Select ROI", "btnSelectRoi"),
             CreateActionButton("Arm", "btnArm"),
             CreateActionButton("Disarm", "btnDisarm"),
+            CreateActionButton("Capture UIA", "btnCaptureUia"),
+            CreateActionButton("Feedback ✅", "btnFeedbackGood"),
+            CreateActionButton("Feedback ❌", "btnFeedbackBad"),
             CreateActionButton("Save", "btnSaveRule")
         });
 
@@ -279,6 +290,18 @@ public sealed class MainForm : Form
         _numRepeatN.Minimum = 1; _numRepeatN.Maximum = 9999; AddRow(grid, 8, "Repeat N", _numRepeatN);
 
         _chkMultiScale.Text = "Use multiscale"; AddRow(grid, 9, "Options", _chkMultiScale);
+        _chkUseUiaWatcher.Text = "Enable UIA watcher"; AddRow(grid, 9, "", _chkUseUiaWatcher);
+        _chkUseOcrWatcher.Text = "Enable OCR watcher"; AddRow(grid, 10, "", _chkUseOcrWatcher);
+        AddRow(grid, 11, "UIA selector", _txtUiaSelector);
+        AddRow(grid, 12, "UIA expected text", _txtUiaExpected);
+        AddRow(grid, 13, "OCR expected text", _txtOcrExpected);
+        _cmbTextMatchMode.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbTextMatchMode.Items.AddRange(new object[] { "contains", "equals", "regex" });
+        _cmbTextMatchMode.SelectedIndex = 0;
+        AddRow(grid, 14, "Text match mode", _cmbTextMatchMode);
+        AddRow(grid, 15, "Rule score", _lblRuleScore);
+        AddRow(grid, 16, "Why", _lblRuleWhy);
+
         _chkRuleOcrAnchors.Text = "Use OCR anchors (rule)"; AddRow(grid, 10, "", _chkRuleOcrAnchors);
         _chkOrbFallback.Text = "Use ORB fallback"; AddRow(grid, 11, "", _chkOrbFallback);
         _chkRuleWindowFilter.Text = "Use window filter"; AddRow(grid, 12, "", _chkRuleWindowFilter);
@@ -409,6 +432,9 @@ public sealed class MainForm : Form
         };
         FindButton("btnDisarm").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.DisarmRule(_selectedRuleId); RefreshAll(); } };
         FindButton("btnSaveRule").Click += (_, __) => SaveRuleEdits();
+        FindButton("btnCaptureUia").Click += (_, __) => CaptureUiaSelector();
+        FindButton("btnFeedbackGood").Click += (_, __) => { if (_selectedRuleId is not null) _controller.SubmitRuleFeedback(_selectedRuleId, RuleFeedbackKind.CorrectTrigger); };
+        FindButton("btnFeedbackBad").Click += (_, __) => { if (_selectedRuleId is not null) _controller.SubmitRuleFeedback(_selectedRuleId, RuleFeedbackKind.FalseTrigger); };
 
         _lstRules.SelectedIndexChanged += (_, __) =>
         {
@@ -643,6 +669,26 @@ public sealed class MainForm : Form
         RefreshAll();
     }
 
+
+    private void CaptureUiaSelector()
+    {
+        if (_selectedRuleId is null) return;
+        try
+        {
+            var f = System.Windows.Automation.AutomationElement.FocusedElement;
+            if (f is null) return;
+            var aid = f.Current.AutomationId ?? string.Empty;
+            var name = f.Current.Name ?? string.Empty;
+            var ct = f.Current.ControlType?.ProgrammaticName?.Split('.').LastOrDefault() ?? "Pane";
+            _txtUiaSelector.Text = $"aid={aid};name~={name};ct={ct}";
+            _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Message = "Captured UIA selector from focused element." });
+        }
+        catch (Exception ex)
+        {
+            _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Severity = TimelineSeverity.Warn, Message = $"UIA capture failed: {ex.Message}" });
+        }
+    }
+
     private void CreateRule()
     {
         if (!TryPromptForName("New Rule", "New rule name", "Rule", out var name)) return;
@@ -862,6 +908,15 @@ public sealed class MainForm : Form
 
         _chkMultiScale.Checked = r.Trigger.UseMultiScaleMatching;
         _chkRuleOcrAnchors.Checked = r.Trigger.UseOcrAnchors;
+        _chkUseUiaWatcher.Checked = r.Trigger.UseUiaWatcher;
+        _chkUseOcrWatcher.Checked = r.Trigger.UseOcrWatcher;
+        _txtUiaSelector.Text = r.Trigger.UiaSelector ?? string.Empty;
+        _txtUiaExpected.Text = r.Trigger.UiaExpectedText ?? string.Empty;
+        _txtOcrExpected.Text = r.Trigger.OcrExpectedText ?? string.Empty;
+        _cmbTextMatchMode.SelectedItem = r.Trigger.UiaMatchMode;
+        var score = _storage.GetLatestRuleScore(r.Id);
+        _lblRuleScore.Text = score is null ? "-" : score.Score.ToString("0.000");
+        _lblRuleWhy.Text = score?.Explanation ?? "-";
         _chkOrbFallback.Checked = r.Trigger.UseOrbFallback;
         _chkRuleWindowFilter.Checked = r.Trigger.UseWindowFilter;
         _txtWindowProcess.Text = r.Trigger.WindowProcessName ?? string.Empty;
@@ -896,6 +951,13 @@ public sealed class MainForm : Form
 
         r.Trigger.UseMultiScaleMatching = _chkMultiScale.Checked;
         r.Trigger.UseOcrAnchors = _chkRuleOcrAnchors.Checked;
+        r.Trigger.UseUiaWatcher = _chkUseUiaWatcher.Checked;
+        r.Trigger.UseOcrWatcher = _chkUseOcrWatcher.Checked;
+        r.Trigger.UiaSelector = NullIfWhite(_txtUiaSelector.Text);
+        r.Trigger.UiaExpectedText = NullIfWhite(_txtUiaExpected.Text);
+        r.Trigger.OcrExpectedText = NullIfWhite(_txtOcrExpected.Text);
+        r.Trigger.UiaMatchMode = (_cmbTextMatchMode.SelectedItem?.ToString() ?? "contains");
+        r.Trigger.OcrMatchMode = r.Trigger.UiaMatchMode;
         r.Trigger.UseOrbFallback = _chkOrbFallback.Checked;
         r.Trigger.UseWindowFilter = _chkRuleWindowFilter.Checked;
         r.Trigger.WindowProcessName = string.IsNullOrWhiteSpace(_txtWindowProcess.Text) ? null : _txtWindowProcess.Text.Trim();
@@ -1203,4 +1265,7 @@ public sealed class MainForm : Form
         foreach (Control child in root.Controls)
             ApplyFontsToControlTree(child, font);
     }
-}
+}    private static string? NullIfWhite(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+
