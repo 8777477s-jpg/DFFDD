@@ -19,7 +19,7 @@ public sealed class RoiMonitorService
         _timeline = timeline;
     }
 
-    public void StartOrReplace(RuleModel rule, Action<string, double> onTriggered, Action<TimelineEvent> log, CancellationToken externalCt)
+    public void StartOrReplace(RuleModel rule, Action<string, double> onTriggered, Action<TimelineEvent> log, CancellationToken externalCt, Action<string, double, string>? onMetric = null)
     {
         if (rule.Trigger.ContextRoi is null && rule.Trigger.Roi is null)
             throw new InvalidOperationException("Rule has no ROI configured.");
@@ -217,6 +217,7 @@ public sealed class RoiMonitorService
                         var metricOpt = DiffMetric(current, baselineButton!);
                         if (!metricOpt.HasValue)
                         {
+                            onMetric?.Invoke(rule.Id, 0.0, "Metric unavailable");
                             await Task.Delay(intervalMs, ct).ConfigureAwait(false);
                             continue;
                         }

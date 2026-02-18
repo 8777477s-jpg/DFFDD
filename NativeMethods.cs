@@ -160,6 +160,21 @@ internal static class NativeMethods
         public UIntPtr dwExtraInfo;
     }
 
+
+    public static string? GetProcessNameByWindow(IntPtr hWnd)
+    {
+        try
+        {
+            _ = GetWindowThreadProcessId(hWnd, out uint pid);
+            if (pid == 0) return null;
+            using var p = System.Diagnostics.Process.GetProcessById((int)pid);
+            return p.ProcessName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
     [StructLayout(LayoutKind.Sequential)]
     public struct KEYBDINPUT
     {

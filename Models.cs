@@ -113,6 +113,7 @@ public sealed class RelativeRoiRect
 
 public sealed class RoiTrigger
 {
+    public TriggerKind TriggerKind { get; set; } = TriggerKind.RoiDiff;
     // Legacy field kept for compatibility and fallback path.
     public RoiRect? Roi { get; set; }
 
@@ -149,6 +150,28 @@ public sealed class RoiTrigger
     public bool CollectIncidentOnFire { get; set; } = false;
 }
 
+public sealed class UiaSelectorRecipe
+{
+    public string? AutomationId { get; set; }
+    public string? PartialName { get; set; }
+    public string? ParentPathHint { get; set; }
+    public string? ControlType { get; set; }
+}
+
+public sealed class SmartRuleConfig
+{
+    public bool UiaWatcherEnabled { get; set; } = false;
+    public bool OcrWatcherEnabled { get; set; } = false;
+    public double FireThreshold { get; set; } = 0.75;
+    public int StabilityTicks { get; set; } = 1;
+    public double RoiWeight { get; set; } = 1.0;
+    public double UiaWeight { get; set; } = 0.25;
+    public double OcrWeight { get; set; } = 0.20;
+    public double AdaptiveBias { get; set; } = 0.0;
+    public UiaSelectorRecipe UiaSelector { get; set; } = new();
+    public string? OcrContains { get; set; }
+}
+
 public sealed class RepeatPolicy
 {
     public RepeatMode Mode { get; set; } = RepeatMode.Infinite;
@@ -166,6 +189,7 @@ public sealed class RuleModel
     public string? MacroId { get; set; }
     public RoiTrigger Trigger { get; set; } = new RoiTrigger();
     public RepeatPolicy Repeat { get; set; } = new RepeatPolicy();
+    public SmartRuleConfig Smart { get; set; } = new SmartRuleConfig();
 }
 
 public sealed class MacroModel

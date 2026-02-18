@@ -8,6 +8,10 @@ public sealed class Controller : IDisposable
     private readonly RecorderService _recorder;
     private readonly PlaybackService _player;
     private readonly RoiMonitorService _roiMonitor;
+    private readonly SmartRuleEngine _smartEngine;
+    private readonly RoiDiffWatcher _roiWatcher;
+    private readonly UiaWatcher _uiaWatcher;
+    private readonly OcrWatcher _ocrWatcher;
 
     private readonly CancellationTokenSource _appCts = new();
 
@@ -17,7 +21,7 @@ public sealed class Controller : IDisposable
     public AppMode Mode { get; private set; } = AppMode.Idle;
 
     public Controller(Storage storage, TimelineService timeline, InputLeaseManager lease,
-        RecorderService recorder, PlaybackService player, RoiMonitorService roiMonitor)
+        RecorderService recorder, PlaybackService player, RoiMonitorService roiMonitor, AppSettings settings)
     {
         _storage = storage;
         _timeline = timeline;
@@ -25,6 +29,16 @@ public sealed class Controller : IDisposable
         _recorder = recorder;
         _player = player;
         _roiMonitor = roiMonitor;
+        _smartEngine = new SmartRuleEngine(storage, timeline);
+        _roiWatcher = new RoiDiffWatcher(roiMonitor, timeline);
+        _uiaWatcher = new UiaWatcher();
+        _ocrWatcher = new OcrWatcher(settings);
+
+        _roiWatcher.OnTriggered += (rid, metric) => _ = HandleRoiTriggeredAsync(rid, metric);
+
+        _smartEngine.RegisterWatcher(_roiWatcher);
+        _smartEngine.RegisterWatcher(_uiaWatcher);
+        _smartEngine.RegisterWatcher(_ocrWatcher);
     }
 
     public void InitializeRuntimeRules()
@@ -172,7 +186,9 @@ public sealed class Controller : IDisposable
             if (other.Id == ruleId) continue;
             if (!other.Enabled && other.State == RuleState.Disarmed) continue;
 
-            _roiMonitor.Stop(other.Id);
+            _roiWatcher.Stop(other.Id);
+            _uiaWatcher.Stop(other.Id);
+            _ocrWatcher.Stop(other.Id);
             other.Enabled = false;
             other.State = RuleState.Disarmed;
             _storage.UpsertRule(other);
@@ -212,14 +228,11 @@ public sealed class Controller : IDisposable
         rule.State = RuleState.ArmedMonitoring;
         _storage.UpsertRule(rule);
 
-        _roiMonitor.StartOrReplace(
-            rule,
-            onTriggered: (rid, metric) => _ = HandleRoiTriggeredAsync(rid, metric),
-            log: ev => _timeline.Add(ev),
-            externalCt: _appCts.Token
-        );
+        _roiWatcher.Start(rule, _appCts.Token);
+        if (rule.Smart.UiaWatcherEnabled) _uiaWatcher.Start(rule, _appCts.Token);
+        if (rule.Smart.OcrWatcherEnabled) _ocrWatcher.Start(rule, _appCts.Token);
 
-        if (!_roiMonitor.IsRunning(rule.Id))
+        if (!_roiWatcher.IsRunning(rule.Id))
         {
             rule.Enabled = false;
             rule.State = RuleState.Disarmed;
@@ -235,7 +248,9 @@ public sealed class Controller : IDisposable
 
     public void DisarmRule(string ruleId)
     {
-        _roiMonitor.Stop(ruleId);
+        _roiWatcher.Stop(ruleId);
+        _uiaWatcher.Stop(ruleId);
+        _ocrWatcher.Stop(ruleId);
 
         var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
         if (rule is null) return;
@@ -249,7 +264,16 @@ public sealed class Controller : IDisposable
     }
 
     private async Task HandleRoiTriggeredAsync(string ruleId, double metric)
-        => await HandleRuleFireAsync(ruleId, metric, "trigger");
+    {
+        var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
+        if (rule is null) return;
+
+        var snapshot = _smartEngine.Evaluate(rule);
+        _timeline.Add(new TimelineEvent { Source = TimelineSource.Rule, Message = $"[SmartRule] rule={rule.Name} score={snapshot.Score:0.000} why={snapshot.Explanation}" });
+        if (!_smartEngine.ShouldFire(rule, snapshot)) return;
+
+        await HandleRuleFireAsync(ruleId, metric, "smart-score");
+    }
 
     private async Task HandleRuleFireAsync(string ruleId, double metric, string reason)
     {
@@ -293,7 +317,9 @@ public sealed class Controller : IDisposable
 
             _timeline.Add(new TimelineEvent { Source = TimelineSource.System, Message = $"[Lease] Result owner=RuleRun:{ruleId} result=ok" });
 
-            _roiMonitor.Stop(ruleId);
+            _roiWatcher.Stop(ruleId);
+            _uiaWatcher.Stop(ruleId);
+            _ocrWatcher.Stop(ruleId);
 
             Mode = AppMode.RunningRule;
             _activeRunCts = new CancellationTokenSource();
@@ -347,12 +373,9 @@ public sealed class Controller : IDisposable
 
             if (shouldContinue)
             {
-                _roiMonitor.StartOrReplace(
-                    rule,
-                    onTriggered: (rid, m2) => _ = HandleRoiTriggeredAsync(rid, m2),
-                    log: ev => _timeline.Add(ev),
-                    externalCt: _appCts.Token
-                );
+                _roiWatcher.Start(rule, _appCts.Token);
+                if (rule.Smart.UiaWatcherEnabled) _uiaWatcher.Start(rule, _appCts.Token);
+                if (rule.Smart.OcrWatcherEnabled) _ocrWatcher.Start(rule, _appCts.Token);
                 _timeline.Add(new TimelineEvent { Source = TimelineSource.Trigger, Message = $"[Trigger] MonitorResume ruleId={rule.Id}" });
             }
             else
@@ -386,6 +409,22 @@ public sealed class Controller : IDisposable
             _lease.ForceRelease();
             RecomputeMode();
         }
+    }
+
+    public void MarkTriggerFeedback(string ruleId, bool correct)
+    {
+        var rule = _storage.ListRules().FirstOrDefault(x => x.Id == ruleId);
+        if (rule is null) return;
+        _smartEngine.ApplyFeedback(rule, correct);
+        _storage.UpsertRule(rule);
+        _timeline.Add(new TimelineEvent
+        {
+            Source = TimelineSource.Rule,
+            Severity = correct ? TimelineSeverity.Info : TimelineSeverity.Warn,
+            Message = correct
+                ? $"Feedback accepted for '{rule.Name}': correct trigger (threshold={rule.Smart.FireThreshold:0.00}, bias={rule.Smart.AdaptiveBias:0.00})."
+                : $"Feedback accepted for '{rule.Name}': false trigger (threshold={rule.Smart.FireThreshold:0.00}, bias={rule.Smart.AdaptiveBias:0.00})."
+        });
     }
 
     private static string FormatRepeatLabel(RuleModel rule)
@@ -438,6 +477,9 @@ public sealed class Controller : IDisposable
     {
         PanicStop();
         _appCts.Cancel();
+        _roiWatcher.Dispose();
+        _uiaWatcher.Dispose();
+        _ocrWatcher.Dispose();
         _appCts.Dispose();
     }
 }
