@@ -43,6 +43,10 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _numLocalSearchPadding = new();
     private readonly NumericUpDown _numGlobalReacquireSeconds = new();
     private readonly CheckBox _chkCollectIncidentOnFire = new();
+    private readonly NumericUpDown _numSmartFireThreshold = new();
+    private readonly NumericUpDown _numSmartConsecutive = new();
+    private readonly Label _lblRuleScore = new();
+    private readonly Label _lblRuleWhy = new();
 
     private readonly Label _lblMode = new();
     private readonly Label _lblStatusDot = new();
@@ -52,6 +56,9 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _numUiScalePercent = new();
     private readonly NumericUpDown _numDiagnosticsFontSize = new();
     private readonly CheckBox _chkTriggerDebug = new();
+    private readonly CheckBox _chkUiaModule = new();
+    private readonly CheckBox _chkSmartRulesModule = new();
+    private readonly CheckBox _chkDiagnosticsMode = new();
 
     private RecordingOverlayForm? _recOverlay;
     private DiagnosticsViewerForm? _diagForm;
@@ -227,6 +234,8 @@ public sealed class MainForm : Form
             CreateActionButton("Select ROI", "btnSelectRoi"),
             CreateActionButton("Arm", "btnArm"),
             CreateActionButton("Disarm", "btnDisarm"),
+            CreateActionButton("Feedback ✓", "btnFeedbackCorrect"),
+            CreateActionButton("Feedback ✗", "btnFeedbackFalse"),
             CreateActionButton("Save", "btnSaveRule")
         });
 
@@ -252,7 +261,7 @@ public sealed class MainForm : Form
         var scrollHost = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         editorLayout.Controls.Add(scrollHost, 0, 2);
 
-        var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 36, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 48, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         for (int i = 0; i < grid.RowCount; i++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -308,32 +317,43 @@ public sealed class MainForm : Form
         _chkCollectIncidentOnFire.Text = "Collect incident on fire";
         AddRow(grid, 20, "", _chkCollectIncidentOnFire);
 
+        _numSmartFireThreshold.DecimalPlaces = 2; _numSmartFireThreshold.Minimum = 0.30M; _numSmartFireThreshold.Maximum = 0.99M; _numSmartFireThreshold.Increment = 0.01M; AddRow(grid, 21, "Smart fire threshold", _numSmartFireThreshold);
+        _numSmartConsecutive.Minimum = 1; _numSmartConsecutive.Maximum = 10; AddRow(grid, 22, "Smart consecutive", _numSmartConsecutive);
+        _lblRuleScore.AutoSize = true; _lblRuleScore.Text = "Score: n/a"; AddRow(grid, 38, "Current score", _lblRuleScore);
+        _lblRuleWhy.AutoSize = true; _lblRuleWhy.Text = "Why: n/a"; AddRow(grid, 39, "Explanation", _lblRuleWhy);
+
         _chkOcrModule.Text = "OCR module enabled";
-        AddRow(grid, 21, "Global", _chkOcrModule);
+        AddRow(grid, 39, "Global", _chkOcrModule);
+        _chkUiaModule.Text = "UIA module enabled";
+        AddRow(grid, 40, "", _chkUiaModule);
+        _chkSmartRulesModule.Text = "Smart Rules enabled";
+        AddRow(grid, 41, "", _chkSmartRulesModule);
+        _chkDiagnosticsMode.Text = "Diagnostics capture mode";
+        AddRow(grid, 42, "", _chkDiagnosticsMode);
 
         _chkTriggerDebug.Text = "Trigger debug details";
-        AddRow(grid, 22, "", _chkTriggerDebug);
+        AddRow(grid, 37, "", _chkTriggerDebug);
 
         _numUiFontSize.Minimum = 8; _numUiFontSize.Maximum = 24; _numUiFontSize.DecimalPlaces = 1; _numUiFontSize.Increment = 0.5M;
-        AddRow(grid, 23, "UI font size", _numUiFontSize);
+        AddRow(grid, 38, "UI font size", _numUiFontSize);
 
         _numUiScalePercent.Minimum = 80; _numUiScalePercent.Maximum = 180; _numUiScalePercent.Increment = 5;
-        AddRow(grid, 24, "UI font scale %", _numUiScalePercent);
+        AddRow(grid, 39, "UI font scale %", _numUiScalePercent);
 
         _numDiagnosticsFontSize.Minimum = 8; _numDiagnosticsFontSize.Maximum = 28; _numDiagnosticsFontSize.DecimalPlaces = 1; _numDiagnosticsFontSize.Increment = 0.5M;
-        AddRow(grid, 25, "Diagnostics font", _numDiagnosticsFontSize);
+        AddRow(grid, 39, "Diagnostics font", _numDiagnosticsFontSize);
 
-        AddRow(grid, 26, "Diag zoom in hotkey", _txtDiagZoomInKey);
-        AddRow(grid, 27, "Diag zoom out hotkey", _txtDiagZoomOutKey);
-        AddRow(grid, 28, "Diag page up hotkey", _txtDiagPageUpKey);
-        AddRow(grid, 29, "Diag page down hotkey", _txtDiagPageDownKey);
-        AddRow(grid, 30, "Diag close hotkey", _txtDiagCloseKey);
-        AddRow(grid, 31, "Diag open hotkey", _txtDiagOpenKey);
-        AddRow(grid, 32, "Panic stop hotkey", _txtPanicKey);
+        AddRow(grid, 37, "Diag zoom in hotkey", _txtDiagZoomInKey);
+        AddRow(grid, 38, "Diag zoom out hotkey", _txtDiagZoomOutKey);
+        AddRow(grid, 39, "Diag page up hotkey", _txtDiagPageUpKey);
+        AddRow(grid, 39, "Diag page down hotkey", _txtDiagPageDownKey);
+        AddRow(grid, 37, "Diag close hotkey", _txtDiagCloseKey);
+        AddRow(grid, 38, "Diag open hotkey", _txtDiagOpenKey);
+        AddRow(grid, 39, "Panic stop hotkey", _txtPanicKey);
 
         var btnApplyUi = new Button { Text = "Apply UI Settings", AutoSize = true, MinimumSize = new Size(140, 0), Margin = new Padding(3, 6, 3, 12) };
         btnApplyUi.Click += (_, __) => SaveSettingsFromUi();
-        AddRow(grid, 33, "", btnApplyUi);
+        AddRow(grid, 39, "", btnApplyUi);
 
         var pnlTimeline = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
         _rootSplit.Panel2.Controls.Add(pnlTimeline);
@@ -409,6 +429,8 @@ public sealed class MainForm : Form
         };
         FindButton("btnDisarm").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.DisarmRule(_selectedRuleId); RefreshAll(); } };
         FindButton("btnSaveRule").Click += (_, __) => SaveRuleEdits();
+        FindButton("btnFeedbackCorrect").Click += (_, __) => { if (_selectedRuleId is null) return; _controller.SubmitRuleFeedback(_selectedRuleId, RuleFeedbackType.Correct); RefreshAll(); };
+        FindButton("btnFeedbackFalse").Click += (_, __) => { if (_selectedRuleId is null) return; _controller.SubmitRuleFeedback(_selectedRuleId, RuleFeedbackType.FalseTrigger); RefreshAll(); };
 
         _lstRules.SelectedIndexChanged += (_, __) =>
         {
@@ -434,6 +456,9 @@ public sealed class MainForm : Form
             _settingsStore.Save(_settings);
             _timeline.Add(new TimelineEvent { Source = TimelineSource.System, Message = $"OCR module setting updated: {(_settings.OcrModuleEnabled ? "Enabled" : "Disabled")}." });
         };
+        _chkUiaModule.CheckedChanged += (_, __) => { if (_isLoadingUi) return; _settings.UiaModuleEnabled = _chkUiaModule.Checked; _settingsStore.Save(_settings); };
+        _chkSmartRulesModule.CheckedChanged += (_, __) => { if (_isLoadingUi) return; _settings.SmartRulesEnabled = _chkSmartRulesModule.Checked; _settingsStore.Save(_settings); };
+        _chkDiagnosticsMode.CheckedChanged += (_, __) => { if (_isLoadingUi) return; _settings.DiagnosticsModeEnabled = _chkDiagnosticsMode.Checked; _settingsStore.Save(_settings); };
 
         _cmbRuleMacro.SelectedIndexChanged += (_, __) =>
         {
@@ -822,6 +847,10 @@ public sealed class MainForm : Form
             _numRepeatN.Value = 1;
             _chkMultiScale.Checked = true;
             _chkRuleOcrAnchors.Checked = false;
+            _numSmartFireThreshold.Value = 0.60M;
+            _numSmartConsecutive.Value = 1;
+            _lblRuleScore.Text = "Score: n/a";
+            _lblRuleWhy.Text = "Why: n/a";
             _chkOrbFallback.Checked = false;
             _chkRuleWindowFilter.Checked = false;
             _txtWindowProcess.Text = string.Empty;
@@ -872,6 +901,11 @@ public sealed class MainForm : Form
         _numLocalSearchPadding.Value = Math.Clamp(r.Trigger.LocalSearchPaddingPx, 20, 1200);
         _numGlobalReacquireSeconds.Value = Math.Clamp(r.Trigger.GlobalReacquireEveryNSeconds, 5, 300);
         _chkCollectIncidentOnFire.Checked = r.Trigger.CollectIncidentOnFire;
+        _numSmartFireThreshold.Value = (decimal)Math.Clamp(r.Smart.FireThreshold, 0.30, 0.99);
+        _numSmartConsecutive.Value = Math.Clamp(r.Smart.ConsecutiveEventsRequired, 1, 10);
+        var score = _controller.GetRuleScore(r.Id);
+        _lblRuleScore.Text = $"Score: {score.Score:0.000}";
+        _lblRuleWhy.Text = $"Why: {score.Explanation}";
         }
         finally
         {
@@ -907,6 +941,8 @@ public sealed class MainForm : Form
         r.Trigger.GlobalReacquireEveryNSeconds = (int)_numGlobalReacquireSeconds.Value;
         r.Trigger.CollectIncidentOnFire = _chkCollectIncidentOnFire.Checked;
         r.Trigger.TriggerDebugDetails = _settings.TriggerDebugDetails;
+        r.Smart.FireThreshold = (double)_numSmartFireThreshold.Value;
+        r.Smart.ConsecutiveEventsRequired = (int)_numSmartConsecutive.Value;
         EnsureNormalizedButtonRect(r.Trigger);
 
         r.Repeat.Mode = _cmbRepeatMode.SelectedItem is RepeatMode rm ? rm : RepeatMode.Infinite;
@@ -979,6 +1015,9 @@ public sealed class MainForm : Form
             _numUiScalePercent.Value = Math.Clamp(_settings.UiScalePercent, 80, 180);
             _numDiagnosticsFontSize.Value = (decimal)Math.Clamp(_settings.DiagnosticsFontSize, 8f, 28f);
             _chkOcrModule.Checked = _settings.OcrModuleEnabled;
+            _chkUiaModule.Checked = _settings.UiaModuleEnabled;
+            _chkSmartRulesModule.Checked = _settings.SmartRulesEnabled;
+            _chkDiagnosticsMode.Checked = _settings.DiagnosticsModeEnabled;
             _chkTriggerDebug.Checked = _settings.TriggerDebugDetails;
             _txtDiagZoomInKey.Value = TryParseHotkey(_settings.DiagnosticsZoomInKey, out var di) ? di : new HotkeyBinding(Keys.Add);
             _txtDiagZoomOutKey.Value = TryParseHotkey(_settings.DiagnosticsZoomOutKey, out var dout) ? dout : new HotkeyBinding(Keys.Subtract);
@@ -1011,6 +1050,9 @@ public sealed class MainForm : Form
         _settings.UiScalePercent = (int)_numUiScalePercent.Value;
         _settings.DiagnosticsFontSize = (float)_numDiagnosticsFontSize.Value;
         _settings.OcrModuleEnabled = _chkOcrModule.Checked;
+        _settings.UiaModuleEnabled = _chkUiaModule.Checked;
+        _settings.SmartRulesEnabled = _chkSmartRulesModule.Checked;
+        _settings.DiagnosticsModeEnabled = _chkDiagnosticsMode.Checked;
         _settings.TriggerDebugDetails = _chkTriggerDebug.Checked;
 
         if (_txtPanicKey.Value.IsEmpty || _txtDiagOpenKey.Value.IsEmpty)
