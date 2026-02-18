@@ -10,6 +10,9 @@ public sealed class AppSettings
     public int UiScalePercent { get; set; } = 100;
     public float DiagnosticsFontSize { get; set; } = 10.0f;
     public bool OcrModuleEnabled { get; set; } = false;
+    public bool UiaModuleEnabled { get; set; } = true;
+    public bool SmartRulesEnabled { get; set; } = true;
+    public bool DiagnosticsModeEnabled { get; set; } = false;
     public string DiagnosticsZoomInKey { get; set; } = nameof(Keys.Add);
     public string DiagnosticsZoomOutKey { get; set; } = nameof(Keys.Subtract);
     public string DiagnosticsPageUpKey { get; set; } = nameof(Keys.PageUp);
