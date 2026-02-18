@@ -166,6 +166,12 @@ public sealed class RuleModel
     public string? MacroId { get; set; }
     public RoiTrigger Trigger { get; set; } = new RoiTrigger();
     public RepeatPolicy Repeat { get; set; } = new RepeatPolicy();
+    public SmartRuleSettings Smart { get; set; } = new SmartRuleSettings();
+
+    [JsonIgnore]
+    public double LastScore { get; set; }
+    [JsonIgnore]
+    public string LastExplanation { get; set; } = "No score yet.";
 }
 
 public sealed class MacroModel
