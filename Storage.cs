@@ -91,6 +91,16 @@ CREATE TABLE IF NOT EXISTS timeline(
   message TEXT NOT NULL,
   details_json TEXT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rule_scores(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  utc_time TEXT NOT NULL,
+  score REAL NOT NULL,
+  explanation TEXT NOT NULL,
+  decision_fire INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_scores_rule_time ON rule_scores(rule_id, utc_time DESC);
 ";
             cmd.ExecuteNonQuery();
         });
@@ -297,4 +307,68 @@ VALUES($id,$t,$src,$sev,$msg,$d);
         else cmd.Parameters.AddWithValue("$d", JsonUtil.ToJson(ev.Details));
         cmd.ExecuteNonQuery();
     });
+
+
+    public void InsertRuleScore(RuleScoreSnapshot snapshot, int maxRowsPerRule = 400) => ExecWithRetry(() =>
+    {
+        using var c = Open();
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = @"
+INSERT INTO rule_scores(id,rule_id,utc_time,score,explanation,decision_fire)
+VALUES($id,$rule,$t,$score,$exp,$fire);
+";
+            cmd.Parameters.AddWithValue("$id", IdUtil.NewId());
+            cmd.Parameters.AddWithValue("$rule", snapshot.RuleId);
+            cmd.Parameters.AddWithValue("$t", snapshot.TimestampUtc.ToString("o"));
+            cmd.Parameters.AddWithValue("$score", snapshot.Score);
+            cmd.Parameters.AddWithValue("$exp", snapshot.Explanation);
+            cmd.Parameters.AddWithValue("$fire", snapshot.DecisionFire ? 1 : 0);
+            cmd.ExecuteNonQuery();
+        }
+
+        using var trim = c.CreateCommand();
+        trim.CommandText = @"
+DELETE FROM rule_scores
+WHERE rule_id=$rule
+  AND id IN (
+    SELECT id FROM rule_scores WHERE rule_id=$rule ORDER BY utc_time DESC LIMIT -1 OFFSET $maxRows
+  );
+";
+        trim.Parameters.AddWithValue("$rule", snapshot.RuleId);
+        trim.Parameters.AddWithValue("$maxRows", Math.Max(50, maxRowsPerRule));
+        trim.ExecuteNonQuery();
+    });
+
+    public List<RuleScoreSnapshot> ListRecentRuleScores(string ruleId, int limit = 80)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+SELECT rule_id, utc_time, score, explanation, decision_fire
+FROM rule_scores
+WHERE rule_id=$rule
+ORDER BY utc_time DESC
+LIMIT $limit;
+";
+        cmd.Parameters.AddWithValue("$rule", ruleId);
+        cmd.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 500));
+
+        using var r = cmd.ExecuteReader();
+        var outList = new List<RuleScoreSnapshot>();
+        while (r.Read())
+        {
+            outList.Add(new RuleScoreSnapshot
+            {
+                RuleId = r.GetString(0),
+                TimestampUtc = DateTime.Parse(r.GetString(1), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                Score = r.GetDouble(2),
+                Explanation = r.GetString(3),
+                DecisionFire = r.GetInt32(4) != 0
+            });
+        }
+
+        return outList;
+    }
+
 }

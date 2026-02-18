@@ -48,6 +48,15 @@ public sealed class MainForm : Form
     private readonly Label _lblStatusDot = new();
 
     private readonly CheckBox _chkOcrModule = new();
+    private readonly CheckBox _chkUiaModule = new();
+    private readonly CheckBox _chkDiagnosticsMode = new();
+    private readonly CheckBox _chkRuleUia = new();
+    private readonly CheckBox _chkRuleOcr = new();
+    private readonly TextBox _txtUiaName = new();
+    private readonly TextBox _txtOcrContains = new();
+    private readonly NumericUpDown _numFireThreshold = new();
+    private readonly NumericUpDown _numScoreStability = new();
+    private readonly Label _lblRuleScore = new();
     private readonly NumericUpDown _numUiFontSize = new();
     private readonly NumericUpDown _numUiScalePercent = new();
     private readonly NumericUpDown _numDiagnosticsFontSize = new();
@@ -227,7 +236,9 @@ public sealed class MainForm : Form
             CreateActionButton("Select ROI", "btnSelectRoi"),
             CreateActionButton("Arm", "btnArm"),
             CreateActionButton("Disarm", "btnDisarm"),
-            CreateActionButton("Save", "btnSaveRule")
+            CreateActionButton("Save", "btnSaveRule"),
+            CreateActionButton("Trigger Correct", "btnFeedbackGood"),
+            CreateActionButton("False Trigger", "btnFeedbackBad")
         });
 
         var pnlEditor = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
@@ -252,7 +263,7 @@ public sealed class MainForm : Form
         var scrollHost = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         editorLayout.Controls.Add(scrollHost, 0, 2);
 
-        var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 36, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 44, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         for (int i = 0; i < grid.RowCount; i++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -271,17 +282,24 @@ public sealed class MainForm : Form
         _numDebounce.Minimum = 0; _numDebounce.Maximum = 5000; _numDebounce.Increment = 50; AddRow(grid, 4, "Debounce ms", _numDebounce);
         _numHits.Minimum = 1; _numHits.Maximum = 10; AddRow(grid, 5, "Hits required", _numHits);
         _numCooldown.Minimum = 0; _numCooldown.Maximum = 30000; _numCooldown.Increment = 100; AddRow(grid, 6, "Cooldown ms", _numCooldown);
+_numFireThreshold.DecimalPlaces = 2; _numFireThreshold.Minimum = 0; _numFireThreshold.Maximum = 1; _numFireThreshold.Increment = 0.01M; AddRow(grid, 7, "Fire score threshold", _numFireThreshold);
+        _numScoreStability.Minimum = 1; _numScoreStability.Maximum = 8; AddRow(grid, 8, "Score stability ticks", _numScoreStability);
+        _chkRuleUia.Text = "Enable UIA watcher (rule)"; AddRow(grid, 9, "Smart watchers", _chkRuleUia);
+        _chkRuleOcr.Text = "Enable OCR watcher (rule)"; AddRow(grid, 10, "", _chkRuleOcr);
+        AddRow(grid, 11, "UIA partial name", _txtUiaName);
+        AddRow(grid, 12, "OCR contains", _txtOcrContains);
+        _lblRuleScore.Text = "Score: n/a"; AddRow(grid, 13, "Current score", _lblRuleScore);
 
         _cmbRepeatMode.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbRepeatMode.Items.AddRange(new object[] { RepeatMode.Once, RepeatMode.RepeatN, RepeatMode.Infinite });
-        AddRow(grid, 7, "Repeat mode", _cmbRepeatMode);
+        AddRow(grid, 14, "Repeat mode", _cmbRepeatMode);
 
-        _numRepeatN.Minimum = 1; _numRepeatN.Maximum = 9999; AddRow(grid, 8, "Repeat N", _numRepeatN);
+        _numRepeatN.Minimum = 1; _numRepeatN.Maximum = 9999; AddRow(grid, 15, "Repeat N", _numRepeatN);
 
-        _chkMultiScale.Text = "Use multiscale"; AddRow(grid, 9, "Options", _chkMultiScale);
-        _chkRuleOcrAnchors.Text = "Use OCR anchors (rule)"; AddRow(grid, 10, "", _chkRuleOcrAnchors);
-        _chkOrbFallback.Text = "Use ORB fallback"; AddRow(grid, 11, "", _chkOrbFallback);
-        _chkRuleWindowFilter.Text = "Use window filter"; AddRow(grid, 12, "", _chkRuleWindowFilter);
+        _chkMultiScale.Text = "Use multiscale"; AddRow(grid, 16, "Options", _chkMultiScale);
+        _chkRuleOcrAnchors.Text = "Use OCR anchors (rule)"; AddRow(grid, 17, "", _chkRuleOcrAnchors);
+        _chkOrbFallback.Text = "Use ORB fallback"; AddRow(grid, 18, "", _chkOrbFallback);
+        _chkRuleWindowFilter.Text = "Use window filter"; AddRow(grid, 19, "", _chkRuleWindowFilter);
 
         _cmbWindowMatchMode.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbWindowMatchMode.Items.AddRange(new object[]
@@ -291,49 +309,53 @@ public sealed class MainForm : Form
             WindowMatchMode.ProcessAndClass,
             WindowMatchMode.StrictAll
         });
-        AddRow(grid, 13, "Window match mode", _cmbWindowMatchMode);
-        AddRow(grid, 14, "Window process", _txtWindowProcess);
-        AddRow(grid, 15, "Window title contains", _txtWindowTitle);
-        AddRow(grid, 16, "Window class", _txtWindowClass);
+        AddRow(grid, 20, "Window match mode", _cmbWindowMatchMode);
+        AddRow(grid, 21, "Window process", _txtWindowProcess);
+        AddRow(grid, 22, "Window title contains", _txtWindowTitle);
+        AddRow(grid, 23, "Window class", _txtWindowClass);
 
         _numLocalSearchPadding.Minimum = 20; _numLocalSearchPadding.Maximum = 1200; _numLocalSearchPadding.Increment = 20;
-        AddRow(grid, 17, "Local search padding px", _numLocalSearchPadding);
+        AddRow(grid, 24, "Local search padding px", _numLocalSearchPadding);
 
         _chkAllowGlobalFallback.Text = "Allow global fallback";
-        AddRow(grid, 18, "", _chkAllowGlobalFallback);
+        AddRow(grid, 25, "", _chkAllowGlobalFallback);
 
         _numGlobalReacquireSeconds.Minimum = 5; _numGlobalReacquireSeconds.Maximum = 300; _numGlobalReacquireSeconds.Increment = 5;
-        AddRow(grid, 19, "Global reacquire sec", _numGlobalReacquireSeconds);
+        AddRow(grid, 26, "Global reacquire sec", _numGlobalReacquireSeconds);
 
         _chkCollectIncidentOnFire.Text = "Collect incident on fire";
-        AddRow(grid, 20, "", _chkCollectIncidentOnFire);
+        AddRow(grid, 27, "", _chkCollectIncidentOnFire);
 
         _chkOcrModule.Text = "OCR module enabled";
-        AddRow(grid, 21, "Global", _chkOcrModule);
+        AddRow(grid, 28, "Global", _chkOcrModule);
+        _chkUiaModule.Text = "UIA module enabled";
+        AddRow(grid, 29, "", _chkUiaModule);
+        _chkDiagnosticsMode.Text = "Diagnostics mode (allow raw captures)";
+        AddRow(grid, 30, "", _chkDiagnosticsMode);
 
         _chkTriggerDebug.Text = "Trigger debug details";
-        AddRow(grid, 22, "", _chkTriggerDebug);
+        AddRow(grid, 31, "", _chkTriggerDebug);
 
         _numUiFontSize.Minimum = 8; _numUiFontSize.Maximum = 24; _numUiFontSize.DecimalPlaces = 1; _numUiFontSize.Increment = 0.5M;
-        AddRow(grid, 23, "UI font size", _numUiFontSize);
+        AddRow(grid, 32, "UI font size", _numUiFontSize);
 
         _numUiScalePercent.Minimum = 80; _numUiScalePercent.Maximum = 180; _numUiScalePercent.Increment = 5;
-        AddRow(grid, 24, "UI font scale %", _numUiScalePercent);
+        AddRow(grid, 33, "UI font scale %", _numUiScalePercent);
 
         _numDiagnosticsFontSize.Minimum = 8; _numDiagnosticsFontSize.Maximum = 28; _numDiagnosticsFontSize.DecimalPlaces = 1; _numDiagnosticsFontSize.Increment = 0.5M;
-        AddRow(grid, 25, "Diagnostics font", _numDiagnosticsFontSize);
+        AddRow(grid, 34, "Diagnostics font", _numDiagnosticsFontSize);
 
-        AddRow(grid, 26, "Diag zoom in hotkey", _txtDiagZoomInKey);
-        AddRow(grid, 27, "Diag zoom out hotkey", _txtDiagZoomOutKey);
-        AddRow(grid, 28, "Diag page up hotkey", _txtDiagPageUpKey);
-        AddRow(grid, 29, "Diag page down hotkey", _txtDiagPageDownKey);
-        AddRow(grid, 30, "Diag close hotkey", _txtDiagCloseKey);
-        AddRow(grid, 31, "Diag open hotkey", _txtDiagOpenKey);
-        AddRow(grid, 32, "Panic stop hotkey", _txtPanicKey);
+        AddRow(grid, 35, "Diag zoom in hotkey", _txtDiagZoomInKey);
+        AddRow(grid, 36, "Diag zoom out hotkey", _txtDiagZoomOutKey);
+        AddRow(grid, 37, "Diag page up hotkey", _txtDiagPageUpKey);
+        AddRow(grid, 38, "Diag page down hotkey", _txtDiagPageDownKey);
+        AddRow(grid, 39, "Diag close hotkey", _txtDiagCloseKey);
+        AddRow(grid, 40, "Diag open hotkey", _txtDiagOpenKey);
+        AddRow(grid, 41, "Panic stop hotkey", _txtPanicKey);
 
         var btnApplyUi = new Button { Text = "Apply UI Settings", AutoSize = true, MinimumSize = new Size(140, 0), Margin = new Padding(3, 6, 3, 12) };
         btnApplyUi.Click += (_, __) => SaveSettingsFromUi();
-        AddRow(grid, 33, "", btnApplyUi);
+        AddRow(grid, 42, "", btnApplyUi);
 
         var pnlTimeline = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
         _rootSplit.Panel2.Controls.Add(pnlTimeline);
@@ -409,6 +431,8 @@ public sealed class MainForm : Form
         };
         FindButton("btnDisarm").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.DisarmRule(_selectedRuleId); RefreshAll(); } };
         FindButton("btnSaveRule").Click += (_, __) => SaveRuleEdits();
+        FindButton("btnFeedbackGood").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.MarkTriggerFeedback(_selectedRuleId, true); RefreshAll(); } };
+        FindButton("btnFeedbackBad").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.MarkTriggerFeedback(_selectedRuleId, false); RefreshAll(); } };
 
         _lstRules.SelectedIndexChanged += (_, __) =>
         {
@@ -824,6 +848,13 @@ public sealed class MainForm : Form
             _chkRuleOcrAnchors.Checked = false;
             _chkOrbFallback.Checked = false;
             _chkRuleWindowFilter.Checked = false;
+            _chkRuleUia.Checked = false;
+            _chkRuleOcr.Checked = false;
+            _txtUiaName.Text = "";
+            _txtOcrContains.Text = "";
+            _numFireThreshold.Value = 0.75M;
+            _numScoreStability.Value = 1;
+            _lblRuleScore.Text = "Score: n/a";
             _txtWindowProcess.Text = string.Empty;
             _txtWindowTitle.Text = string.Empty;
             _txtWindowClass.Text = string.Empty;
@@ -864,6 +895,14 @@ public sealed class MainForm : Form
         _chkRuleOcrAnchors.Checked = r.Trigger.UseOcrAnchors;
         _chkOrbFallback.Checked = r.Trigger.UseOrbFallback;
         _chkRuleWindowFilter.Checked = r.Trigger.UseWindowFilter;
+        _chkRuleUia.Checked = r.Smart.UiaWatcherEnabled;
+        _chkRuleOcr.Checked = r.Smart.OcrWatcherEnabled;
+        _txtUiaName.Text = r.Smart.UiaSelector.PartialName ?? string.Empty;
+        _txtOcrContains.Text = r.Smart.OcrContains ?? string.Empty;
+        _numFireThreshold.Value = (decimal)Math.Clamp(r.Smart.FireThreshold, 0.0, 1.0);
+        _numScoreStability.Value = Math.Clamp(r.Smart.StabilityTicks, 1, 8);
+        var score = _storage.ListRecentRuleScores(r.Id, 1).FirstOrDefault();
+        _lblRuleScore.Text = score is null ? "Score: n/a" : $"Score: {score.Score:0.00} | {score.Explanation}";
         _txtWindowProcess.Text = r.Trigger.WindowProcessName ?? string.Empty;
         _txtWindowTitle.Text = r.Trigger.WindowTitleContains ?? string.Empty;
         _txtWindowClass.Text = r.Trigger.WindowClassName ?? string.Empty;
@@ -898,6 +937,12 @@ public sealed class MainForm : Form
         r.Trigger.UseOcrAnchors = _chkRuleOcrAnchors.Checked;
         r.Trigger.UseOrbFallback = _chkOrbFallback.Checked;
         r.Trigger.UseWindowFilter = _chkRuleWindowFilter.Checked;
+        r.Smart.UiaWatcherEnabled = _chkRuleUia.Checked;
+        r.Smart.OcrWatcherEnabled = _chkRuleOcr.Checked;
+        r.Smart.UiaSelector.PartialName = string.IsNullOrWhiteSpace(_txtUiaName.Text) ? null : _txtUiaName.Text.Trim();
+        r.Smart.OcrContains = string.IsNullOrWhiteSpace(_txtOcrContains.Text) ? null : _txtOcrContains.Text.Trim();
+        r.Smart.FireThreshold = (double)_numFireThreshold.Value;
+        r.Smart.StabilityTicks = (int)_numScoreStability.Value;
         r.Trigger.WindowProcessName = string.IsNullOrWhiteSpace(_txtWindowProcess.Text) ? null : _txtWindowProcess.Text.Trim();
         r.Trigger.WindowTitleContains = string.IsNullOrWhiteSpace(_txtWindowTitle.Text) ? null : _txtWindowTitle.Text.Trim();
         r.Trigger.WindowClassName = string.IsNullOrWhiteSpace(_txtWindowClass.Text) ? null : _txtWindowClass.Text.Trim();
@@ -979,6 +1024,8 @@ public sealed class MainForm : Form
             _numUiScalePercent.Value = Math.Clamp(_settings.UiScalePercent, 80, 180);
             _numDiagnosticsFontSize.Value = (decimal)Math.Clamp(_settings.DiagnosticsFontSize, 8f, 28f);
             _chkOcrModule.Checked = _settings.OcrModuleEnabled;
+            _chkUiaModule.Checked = _settings.UiaModuleEnabled;
+            _chkDiagnosticsMode.Checked = _settings.DiagnosticsModeEnabled;
             _chkTriggerDebug.Checked = _settings.TriggerDebugDetails;
             _txtDiagZoomInKey.Value = TryParseHotkey(_settings.DiagnosticsZoomInKey, out var di) ? di : new HotkeyBinding(Keys.Add);
             _txtDiagZoomOutKey.Value = TryParseHotkey(_settings.DiagnosticsZoomOutKey, out var dout) ? dout : new HotkeyBinding(Keys.Subtract);
@@ -1011,6 +1058,8 @@ public sealed class MainForm : Form
         _settings.UiScalePercent = (int)_numUiScalePercent.Value;
         _settings.DiagnosticsFontSize = (float)_numDiagnosticsFontSize.Value;
         _settings.OcrModuleEnabled = _chkOcrModule.Checked;
+        _settings.UiaModuleEnabled = _chkUiaModule.Checked;
+        _settings.DiagnosticsModeEnabled = _chkDiagnosticsMode.Checked;
         _settings.TriggerDebugDetails = _chkTriggerDebug.Checked;
 
         if (_txtPanicKey.Value.IsEmpty || _txtDiagOpenKey.Value.IsEmpty)
