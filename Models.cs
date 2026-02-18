@@ -68,6 +68,41 @@ public enum TrackingScope
     PrimaryMonitor = 1
 }
 
+public enum TriggerKind
+{
+    RoiDiff = 0,
+    UiaText = 1,
+    OcrText = 2
+}
+
+public enum WatcherType
+{
+    RoiDiff = 0,
+    Uia = 1,
+    Ocr = 2
+}
+
+public enum ObservationSourceType
+{
+    ROI_DIFF = 0,
+    UIA = 1,
+    OCR = 2,
+    WINDOW_STATE = 3
+}
+
+public enum TextMatchMode
+{
+    Contains = 0,
+    Equals = 1,
+    Regex = 2
+}
+
+public enum RuleFeedbackType
+{
+    Correct = 0,
+    FalseTrigger = 1
+}
+
 public enum WindowMatchMode
 {
     ProcessOnly = 0,
@@ -149,6 +184,56 @@ public sealed class RoiTrigger
     public bool CollectIncidentOnFire { get; set; } = false;
 }
 
+public sealed class UiaTrigger
+{
+    public bool Enabled { get; set; } = false;
+    public string? ProcessName { get; set; }
+    public string? WindowTitleContains { get; set; }
+    public string? ClassName { get; set; }
+    public string? NameContains { get; set; }
+    public string? ValueContains { get; set; }
+}
+
+public sealed class OcrTrigger
+{
+    public bool Enabled { get; set; } = false;
+    public RoiRect? Region { get; set; }
+    public int SamplingHz { get; set; } = 2;
+    public TextMatchMode MatchMode { get; set; } = TextMatchMode.Contains;
+    public string? Pattern { get; set; }
+    public bool CaseInsensitive { get; set; } = true;
+}
+
+public sealed class SmartRuleConfig
+{
+    public bool Enabled { get; set; } = true;
+    public double FireThreshold { get; set; } = 0.60;
+    public int ConsecutiveEventsRequired { get; set; } = 1;
+    public int CooldownMs { get; set; } = 1000;
+    public int DebounceMs { get; set; } = 250;
+    public double RoiWeight { get; set; } = 0.70;
+    public double UiaWeight { get; set; } = 0.20;
+    public double OcrWeight { get; set; } = 0.10;
+}
+
+public sealed class Observation
+{
+    public ObservationSourceType SourceType { get; set; }
+    public string Scope { get; set; } = "";
+    public DateTime TimestampUtc { get; set; } = DateTime.UtcNow;
+    public Dictionary<string, string> Payload { get; set; } = new();
+    public double Confidence { get; set; }
+    public string DebugReason { get; set; } = "";
+}
+
+public sealed class RuleScoreSnapshot
+{
+    public string RuleId { get; set; } = "";
+    public DateTime TimestampUtc { get; set; } = DateTime.UtcNow;
+    public double Score { get; set; }
+    public string Explanation { get; set; } = "";
+}
+
 public sealed class RepeatPolicy
 {
     public RepeatMode Mode { get; set; } = RepeatMode.Infinite;
@@ -165,6 +250,9 @@ public sealed class RuleModel
 
     public string? MacroId { get; set; }
     public RoiTrigger Trigger { get; set; } = new RoiTrigger();
+    public UiaTrigger UiaTrigger { get; set; } = new UiaTrigger();
+    public OcrTrigger OcrTrigger { get; set; } = new OcrTrigger();
+    public SmartRuleConfig Smart { get; set; } = new SmartRuleConfig();
     public RepeatPolicy Repeat { get; set; } = new RepeatPolicy();
 }
 
