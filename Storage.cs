@@ -91,6 +91,21 @@ CREATE TABLE IF NOT EXISTS timeline(
   message TEXT NOT NULL,
   details_json TEXT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rule_scores(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  utc_time TEXT NOT NULL,
+  score REAL NOT NULL,
+  explanation TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rule_feedback(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  utc_time TEXT NOT NULL,
+  feedback_kind INTEGER NOT NULL
+);
 ";
             cmd.ExecuteNonQuery();
         });
@@ -297,4 +312,63 @@ VALUES($id,$t,$src,$sev,$msg,$d);
         else cmd.Parameters.AddWithValue("$d", JsonUtil.ToJson(ev.Details));
         cmd.ExecuteNonQuery();
     });
+
+    public void InsertRuleScore(RuleScoreSnapshot score, int maxRowsPerRule = 300) => ExecWithRetry(() =>
+    {
+        using var c = Open();
+        using var tx = c.BeginTransaction();
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"INSERT INTO rule_scores(id,rule_id,utc_time,score,explanation) VALUES($id,$rid,$t,$s,$e);";
+            cmd.Parameters.AddWithValue("$id", IdUtil.NewId());
+            cmd.Parameters.AddWithValue("$rid", score.RuleId);
+            cmd.Parameters.AddWithValue("$t", score.UtcTime.ToString("o"));
+            cmd.Parameters.AddWithValue("$s", score.Score);
+            cmd.Parameters.AddWithValue("$e", score.Explanation);
+            cmd.ExecuteNonQuery();
+        }
+
+        using (var trim = c.CreateCommand())
+        {
+            trim.Transaction = tx;
+            trim.CommandText = @"DELETE FROM rule_scores WHERE id IN (
+SELECT id FROM rule_scores WHERE rule_id=$rid ORDER BY utc_time DESC LIMIT -1 OFFSET $maxRows
+);";
+            trim.Parameters.AddWithValue("$rid", score.RuleId);
+            trim.Parameters.AddWithValue("$maxRows", maxRowsPerRule);
+            trim.ExecuteNonQuery();
+        }
+        tx.Commit();
+    });
+
+    public RuleScoreSnapshot? GetLatestRuleScore(string ruleId)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT rule_id,utc_time,score,explanation FROM rule_scores WHERE rule_id=$rid ORDER BY utc_time DESC LIMIT 1;";
+        cmd.Parameters.AddWithValue("$rid", ruleId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        return new RuleScoreSnapshot
+        {
+            RuleId = r.GetString(0),
+            UtcTime = DateTime.Parse(r.GetString(1), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            Score = r.GetDouble(2),
+            Explanation = r.GetString(3)
+        };
+    }
+
+    public void InsertRuleFeedback(string ruleId, RuleFeedbackKind kind) => ExecWithRetry(() =>
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "INSERT INTO rule_feedback(id,rule_id,utc_time,feedback_kind) VALUES($id,$rid,$t,$k);";
+        cmd.Parameters.AddWithValue("$id", IdUtil.NewId());
+        cmd.Parameters.AddWithValue("$rid", ruleId);
+        cmd.Parameters.AddWithValue("$t", DateTime.UtcNow.ToString("o"));
+        cmd.Parameters.AddWithValue("$k", (int)kind);
+        cmd.ExecuteNonQuery();
+    });
+
 }

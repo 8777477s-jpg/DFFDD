@@ -39,8 +39,11 @@ internal static class Program
         var recorder = new RecorderService(timeline);
         var player = new PlaybackService(timeline);
         var roiMonitor = new RoiMonitorService(timeline);
+        var roiWatcher = new RoiDiffWatcher(roiMonitor);
+        var uiaWatcher = new UiaWatcher();
+        var ocrWatcher = new OcrWatcher();
 
-        using var controller = new Controller(storage, timeline, lease, recorder, player, roiMonitor);
+        using var controller = new Controller(storage, timeline, lease, recorder, player, roiMonitor, roiWatcher, uiaWatcher, ocrWatcher);
         controller.InitializeRuntimeRules();
 
         Application.Run(new MainForm(controller, storage, timeline, settingsStore, settings));

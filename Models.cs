@@ -147,6 +147,28 @@ public sealed class RoiTrigger
     public double MetricVarianceMax { get; set; } = 0.20;
     public bool TriggerDebugDetails { get; set; } = false;
     public bool CollectIncidentOnFire { get; set; } = false;
+
+    // Smart rules stage-1 options.
+    public bool UseUiaWatcher { get; set; } = false;
+    public bool UseOcrWatcher { get; set; } = false;
+    public string? UiaSelector { get; set; }
+    public string? UiaExpectedText { get; set; }
+    public string UiaMatchMode { get; set; } = "contains";
+    public int UiaSamplingHz { get; set; } = 4;
+
+    public int OcrRegionX { get; set; } = 0;
+    public int OcrRegionY { get; set; } = 0;
+    public int OcrRegionW { get; set; } = 200;
+    public int OcrRegionH { get; set; } = 60;
+    public string? OcrExpectedText { get; set; }
+    public string OcrMatchMode { get; set; } = "contains";
+    public int OcrIntervalMs { get; set; } = 500;
+
+    public double FireThreshold { get; set; } = 0.65;
+    public int ScoreConsecutiveRequired { get; set; } = 1;
+    public double RoiWeight { get; set; } = 1.0;
+    public double UiaWeight { get; set; } = 0.35;
+    public double OcrWeight { get; set; } = 0.35;
 }
 
 public sealed class RepeatPolicy
