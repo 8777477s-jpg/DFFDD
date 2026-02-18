@@ -91,6 +91,22 @@ CREATE TABLE IF NOT EXISTS timeline(
   message TEXT NOT NULL,
   details_json TEXT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rule_scores(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  timestamp_utc TEXT NOT NULL,
+  score REAL NOT NULL,
+  explanation TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rule_feedback(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  timestamp_utc TEXT NOT NULL,
+  feedback_type INTEGER NOT NULL,
+  notes TEXT NULL
+);
 ";
             cmd.ExecuteNonQuery();
         });
@@ -297,4 +313,80 @@ VALUES($id,$t,$src,$sev,$msg,$d);
         else cmd.Parameters.AddWithValue("$d", JsonUtil.ToJson(ev.Details));
         cmd.ExecuteNonQuery();
     });
+
+    public void InsertRuleScore(RuleScoreSnapshot snapshot, int maxRowsPerRule = 200)
+        => ExecWithRetry(() =>
+        {
+            using var c = Open();
+            using var tx = c.BeginTransaction();
+
+            using (var ins = c.CreateCommand())
+            {
+                ins.Transaction = tx;
+                ins.CommandText = @"
+INSERT INTO rule_scores(id,rule_id,timestamp_utc,score,explanation)
+VALUES($id,$rule,$ts,$score,$exp);
+";
+                ins.Parameters.AddWithValue("$id", IdUtil.NewId());
+                ins.Parameters.AddWithValue("$rule", snapshot.RuleId);
+                ins.Parameters.AddWithValue("$ts", snapshot.TimestampUtc.ToString("o"));
+                ins.Parameters.AddWithValue("$score", snapshot.Score);
+                ins.Parameters.AddWithValue("$exp", snapshot.Explanation);
+                ins.ExecuteNonQuery();
+            }
+
+            using (var trim = c.CreateCommand())
+            {
+                trim.Transaction = tx;
+                trim.CommandText = @"
+DELETE FROM rule_scores
+WHERE id IN (
+  SELECT id FROM rule_scores
+  WHERE rule_id = $rule
+  ORDER BY timestamp_utc DESC
+  LIMIT -1 OFFSET $keep
+);
+";
+                trim.Parameters.AddWithValue("$rule", snapshot.RuleId);
+                trim.Parameters.AddWithValue("$keep", maxRowsPerRule);
+                trim.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        });
+
+    public RuleScoreSnapshot? GetLatestRuleScore(string ruleId)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT timestamp_utc,score,explanation FROM rule_scores WHERE rule_id=$rule ORDER BY timestamp_utc DESC LIMIT 1;";
+        cmd.Parameters.AddWithValue("$rule", ruleId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        return new RuleScoreSnapshot
+        {
+            RuleId = ruleId,
+            TimestampUtc = DateTime.Parse(r.GetString(0), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            Score = r.GetDouble(1),
+            Explanation = r.GetString(2)
+        };
+    }
+
+    public void InsertRuleFeedback(string ruleId, RuleFeedbackType feedbackType, string? notes = null)
+        => ExecWithRetry(() =>
+        {
+            using var c = Open();
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO rule_feedback(id,rule_id,timestamp_utc,feedback_type,notes)
+VALUES($id,$rule,$ts,$type,$notes);
+";
+            cmd.Parameters.AddWithValue("$id", IdUtil.NewId());
+            cmd.Parameters.AddWithValue("$rule", ruleId);
+            cmd.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("o"));
+            cmd.Parameters.AddWithValue("$type", (int)feedbackType);
+            if (notes is null) cmd.Parameters.AddWithValue("$notes", DBNull.Value);
+            else cmd.Parameters.AddWithValue("$notes", notes);
+            cmd.ExecuteNonQuery();
+        });
 }

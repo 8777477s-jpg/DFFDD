@@ -40,7 +40,7 @@ internal static class Program
         var player = new PlaybackService(timeline);
         var roiMonitor = new RoiMonitorService(timeline);
 
-        using var controller = new Controller(storage, timeline, lease, recorder, player, roiMonitor);
+        using var controller = new Controller(storage, timeline, lease, recorder, player, roiMonitor, settings);
         controller.InitializeRuntimeRules();
 
         Application.Run(new MainForm(controller, storage, timeline, settingsStore, settings));
