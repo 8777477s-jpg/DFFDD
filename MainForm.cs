@@ -44,6 +44,17 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _numGlobalReacquireSeconds = new();
     private readonly CheckBox _chkCollectIncidentOnFire = new();
 
+    private readonly CheckBox _chkSmartEnabled = new();
+    private readonly CheckBox _chkUiaWatcher = new();
+    private readonly CheckBox _chkOcrWatcher = new();
+    private readonly NumericUpDown _numSmartThreshold = new();
+    private readonly NumericUpDown _numSmartStability = new();
+    private readonly TextBox _txtUiaSelector = new();
+    private readonly TextBox _txtOcrPattern = new();
+    private readonly CheckBox _chkOcrRegex = new();
+    private readonly Label _lblRuleScore = new();
+    private readonly Label _lblRuleWhy = new();
+
     private readonly Label _lblMode = new();
     private readonly Label _lblStatusDot = new();
 
@@ -227,7 +238,9 @@ public sealed class MainForm : Form
             CreateActionButton("Select ROI", "btnSelectRoi"),
             CreateActionButton("Arm", "btnArm"),
             CreateActionButton("Disarm", "btnDisarm"),
-            CreateActionButton("Save", "btnSaveRule")
+            CreateActionButton("Save", "btnSaveRule"),
+            CreateActionButton("✓ Correct", "btnFeedbackGood"),
+            CreateActionButton("✕ False", "btnFeedbackBad")
         });
 
         var pnlEditor = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
@@ -252,7 +265,7 @@ public sealed class MainForm : Form
         var scrollHost = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         editorLayout.Controls.Add(scrollHost, 0, 2);
 
-        var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 36, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 46, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         for (int i = 0; i < grid.RowCount; i++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -331,9 +344,31 @@ public sealed class MainForm : Form
         AddRow(grid, 31, "Diag open hotkey", _txtDiagOpenKey);
         AddRow(grid, 32, "Panic stop hotkey", _txtPanicKey);
 
+        _chkSmartEnabled.Text = "Enable scoring policy";
+        AddRow(grid, 33, "Smart Rules", _chkSmartEnabled);
+        _chkUiaWatcher.Text = "Enable UIA watcher";
+        AddRow(grid, 34, "UIA watcher", _chkUiaWatcher);
+        _txtUiaSelector.PlaceholderText = "AutomationId+ControlType+Name+parent";
+        AddRow(grid, 35, "UIA selector", _txtUiaSelector);
+        _chkOcrWatcher.Text = "Enable OCR watcher";
+        AddRow(grid, 36, "OCR watcher", _chkOcrWatcher);
+        _txtOcrPattern.PlaceholderText = "contains/equals/regex pattern";
+        AddRow(grid, 37, "OCR pattern", _txtOcrPattern);
+        _chkOcrRegex.Text = "Pattern is regex";
+        AddRow(grid, 38, "OCR regex", _chkOcrRegex);
+        _numSmartThreshold.DecimalPlaces = 2; _numSmartThreshold.Minimum = 0; _numSmartThreshold.Maximum = 1; _numSmartThreshold.Increment = 0.01M;
+        AddRow(grid, 39, "Fire score threshold", _numSmartThreshold);
+        _numSmartStability.Minimum = 1; _numSmartStability.Maximum = 8;
+        AddRow(grid, 40, "Stability events", _numSmartStability);
+        _lblRuleScore.Text = "Score: n/a";
+        AddRow(grid, 41, "Live score", _lblRuleScore);
+        _lblRuleWhy.Text = "Why: n/a";
+        _lblRuleWhy.MaximumSize = new Size(360, 0);
+        AddRow(grid, 42, "Why", _lblRuleWhy);
+
         var btnApplyUi = new Button { Text = "Apply UI Settings", AutoSize = true, MinimumSize = new Size(140, 0), Margin = new Padding(3, 6, 3, 12) };
         btnApplyUi.Click += (_, __) => SaveSettingsFromUi();
-        AddRow(grid, 33, "", btnApplyUi);
+        AddRow(grid, 43, "", btnApplyUi);
 
         var pnlTimeline = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
         _rootSplit.Panel2.Controls.Add(pnlTimeline);
@@ -409,6 +444,8 @@ public sealed class MainForm : Form
         };
         FindButton("btnDisarm").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.DisarmRule(_selectedRuleId); RefreshAll(); } };
         FindButton("btnSaveRule").Click += (_, __) => SaveRuleEdits();
+        FindButton("btnFeedbackGood").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.ApplyRuleFeedback(_selectedRuleId, true); RefreshAll(); } };
+        FindButton("btnFeedbackBad").Click += (_, __) => { if (_selectedRuleId is not null) { _controller.ApplyRuleFeedback(_selectedRuleId, false); RefreshAll(); } };
 
         _lstRules.SelectedIndexChanged += (_, __) =>
         {
@@ -872,6 +909,18 @@ public sealed class MainForm : Form
         _numLocalSearchPadding.Value = Math.Clamp(r.Trigger.LocalSearchPaddingPx, 20, 1200);
         _numGlobalReacquireSeconds.Value = Math.Clamp(r.Trigger.GlobalReacquireEveryNSeconds, 5, 300);
         _chkCollectIncidentOnFire.Checked = r.Trigger.CollectIncidentOnFire;
+
+        _chkSmartEnabled.Checked = r.Smart.EnableSmartRules;
+        _chkUiaWatcher.Checked = r.Smart.EnableUiaWatcher;
+        _chkOcrWatcher.Checked = r.Smart.EnableOcrWatcher;
+        _txtUiaSelector.Text = r.Smart.UiaSelectorRecipe;
+        _txtOcrPattern.Text = r.Smart.OcrPattern;
+        _chkOcrRegex.Checked = r.Smart.OcrPatternIsRegex;
+        _numSmartThreshold.Value = (decimal)Math.Clamp(r.Smart.FireThreshold, 0.0, 1.0);
+        _numSmartStability.Value = Math.Clamp(r.Smart.StabilityEvents, 1, 8);
+        var score = _controller.GetRuleScore(r.Id);
+        _lblRuleScore.Text = $"Score: {score.score:0.000}";
+        _lblRuleWhy.Text = $"Why: {score.explanation}";
         }
         finally
         {
@@ -908,6 +957,15 @@ public sealed class MainForm : Form
         r.Trigger.CollectIncidentOnFire = _chkCollectIncidentOnFire.Checked;
         r.Trigger.TriggerDebugDetails = _settings.TriggerDebugDetails;
         EnsureNormalizedButtonRect(r.Trigger);
+
+        r.Smart.EnableSmartRules = _chkSmartEnabled.Checked;
+        r.Smart.EnableUiaWatcher = _chkUiaWatcher.Checked;
+        r.Smart.EnableOcrWatcher = _chkOcrWatcher.Checked;
+        r.Smart.UiaSelectorRecipe = _txtUiaSelector.Text.Trim();
+        r.Smart.OcrPattern = _txtOcrPattern.Text.Trim();
+        r.Smart.OcrPatternIsRegex = _chkOcrRegex.Checked;
+        r.Smart.FireThreshold = (double)_numSmartThreshold.Value;
+        r.Smart.StabilityEvents = (int)_numSmartStability.Value;
 
         r.Repeat.Mode = _cmbRepeatMode.SelectedItem is RepeatMode rm ? rm : RepeatMode.Infinite;
         r.Repeat.N = (int)_numRepeatN.Value;
