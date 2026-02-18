@@ -91,8 +91,29 @@ CREATE TABLE IF NOT EXISTS timeline(
   message TEXT NOT NULL,
   details_json TEXT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rule_score_history(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  utc_time TEXT NOT NULL,
+  score REAL NOT NULL,
+  explanation TEXT NOT NULL,
+  top_reasons TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rule_feedback(
+  id TEXT PRIMARY KEY,
+  rule_id TEXT NOT NULL,
+  utc_time TEXT NOT NULL,
+  was_correct INTEGER NOT NULL,
+  note TEXT NULL
+);
 ";
             cmd.ExecuteNonQuery();
+
+            using var alter = c.CreateCommand();
+            alter.CommandText = "ALTER TABLE rules ADD COLUMN smart_json TEXT NULL;";
+            try { alter.ExecuteNonQuery(); } catch { }
         });
     }
 
@@ -181,15 +202,16 @@ ON CONFLICT(id) DO UPDATE SET
         using var c = Open();
         using var cmd = c.CreateCommand();
         cmd.CommandText = @"
-INSERT INTO rules(id,name,enabled,macro_id,trigger_json,repeat_json,state_json)
-VALUES($id,$name,$enabled,$macro,$trigger,$repeat,$state)
+INSERT INTO rules(id,name,enabled,macro_id,trigger_json,repeat_json,state_json,smart_json)
+VALUES($id,$name,$enabled,$macro,$trigger,$repeat,$state,$smart)
 ON CONFLICT(id) DO UPDATE SET
   name=excluded.name,
   enabled=excluded.enabled,
   macro_id=excluded.macro_id,
   trigger_json=excluded.trigger_json,
   repeat_json=excluded.repeat_json,
-  state_json=excluded.state_json;
+  state_json=excluded.state_json,
+  smart_json=excluded.smart_json;
 ";
         cmd.Parameters.AddWithValue("$id", r.Id);
         cmd.Parameters.AddWithValue("$name", r.Name);
@@ -199,6 +221,7 @@ ON CONFLICT(id) DO UPDATE SET
         cmd.Parameters.AddWithValue("$trigger", JsonUtil.ToJson(r.Trigger));
         cmd.Parameters.AddWithValue("$repeat", JsonUtil.ToJson(r.Repeat));
         cmd.Parameters.AddWithValue("$state", JsonUtil.ToJson(new RuleStatePersist { State = r.State, RunsDone = r.RunsDone }));
+        cmd.Parameters.AddWithValue("$smart", JsonUtil.ToJson(r.Smart));
         cmd.ExecuteNonQuery();
     });
 
@@ -215,7 +238,7 @@ ON CONFLICT(id) DO UPDATE SET
     {
         using var c = Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = "SELECT id,name,enabled,macro_id,trigger_json,repeat_json,state_json FROM rules ORDER BY name ASC;";
+        cmd.CommandText = "SELECT id,name,enabled,macro_id,trigger_json,repeat_json,state_json,COALESCE(smart_json,'') FROM rules ORDER BY name ASC;";
         using var r = cmd.ExecuteReader();
 
         var list = new List<RuleModel>();
@@ -228,6 +251,7 @@ ON CONFLICT(id) DO UPDATE SET
             var trigger = JsonUtil.FromJson<RoiTrigger>(r.GetString(4)) ?? new RoiTrigger();
             var repeat = JsonUtil.FromJson<RepeatPolicy>(r.GetString(5)) ?? new RepeatPolicy();
             var statePersist = JsonUtil.FromJson<RuleStatePersist>(r.GetString(6)) ?? new RuleStatePersist();
+            var smart = string.IsNullOrWhiteSpace(r.GetString(7)) ? new SmartRuleSettings() : (JsonUtil.FromJson<SmartRuleSettings>(r.GetString(7)) ?? new SmartRuleSettings());
 
             list.Add(new RuleModel
             {
@@ -238,7 +262,8 @@ ON CONFLICT(id) DO UPDATE SET
                 Trigger = trigger,
                 Repeat = repeat,
                 State = statePersist.State,
-                RunsDone = statePersist.RunsDone
+                RunsDone = statePersist.RunsDone,
+                Smart = smart
             });
         }
         return list;
@@ -297,4 +322,57 @@ VALUES($id,$t,$src,$sev,$msg,$d);
         else cmd.Parameters.AddWithValue("$d", JsonUtil.ToJson(ev.Details));
         cmd.ExecuteNonQuery();
     });
+
+
+    public void InsertRuleScore(RuleScoreSample sample) => ExecWithRetry(() =>
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"INSERT INTO rule_score_history(id,rule_id,utc_time,score,explanation,top_reasons) VALUES($id,$rule,$utc,$score,$exp,$reasons);";
+        cmd.Parameters.AddWithValue("$id", sample.Id);
+        cmd.Parameters.AddWithValue("$rule", sample.RuleId);
+        cmd.Parameters.AddWithValue("$utc", sample.UtcTime.ToString("o"));
+        cmd.Parameters.AddWithValue("$score", sample.Score);
+        cmd.Parameters.AddWithValue("$exp", sample.Explanation);
+        cmd.Parameters.AddWithValue("$reasons", sample.TopReasons);
+        cmd.ExecuteNonQuery();
+
+        using var prune = c.CreateCommand();
+        prune.CommandText = @"DELETE FROM rule_score_history WHERE id IN (SELECT id FROM rule_score_history WHERE rule_id=$rule ORDER BY utc_time DESC LIMIT -1 OFFSET 120);";
+        prune.Parameters.AddWithValue("$rule", sample.RuleId);
+        prune.ExecuteNonQuery();
+    });
+
+    public RuleScoreSample? GetLatestRuleScore(string ruleId)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT id,rule_id,utc_time,score,explanation,top_reasons FROM rule_score_history WHERE rule_id=$rule ORDER BY utc_time DESC LIMIT 1;";
+        cmd.Parameters.AddWithValue("$rule", ruleId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        return new RuleScoreSample
+        {
+            Id = r.GetString(0),
+            RuleId = r.GetString(1),
+            UtcTime = DateTime.Parse(r.GetString(2), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            Score = r.GetDouble(3),
+            Explanation = r.GetString(4),
+            TopReasons = r.GetString(5)
+        };
+    }
+
+    public void InsertRuleFeedback(RuleFeedbackRecord feedback) => ExecWithRetry(() =>
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"INSERT INTO rule_feedback(id,rule_id,utc_time,was_correct,note) VALUES($id,$rule,$utc,$ok,$note);";
+        cmd.Parameters.AddWithValue("$id", feedback.Id);
+        cmd.Parameters.AddWithValue("$rule", feedback.RuleId);
+        cmd.Parameters.AddWithValue("$utc", feedback.UtcTime.ToString("o"));
+        cmd.Parameters.AddWithValue("$ok", feedback.WasCorrect ? 1 : 0);
+        if (feedback.Note is null) cmd.Parameters.AddWithValue("$note", DBNull.Value); else cmd.Parameters.AddWithValue("$note", feedback.Note);
+        cmd.ExecuteNonQuery();
+    });
+
 }
